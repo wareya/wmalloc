@@ -1,5 +1,7 @@
 Threadsafe malloc/free/calloc/realloc implementation using raw OS primitives on Windows and Linux (other unixes may be supported but have not been tested).
 
+Include only in a single `.cpp` file in your project, and re-export wrapper functions from there.
+
 Features:
 
 - Small implementation size
