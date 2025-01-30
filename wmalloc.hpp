@@ -38,8 +38,13 @@ typedef WAllocHeader * WAllocHeaderPtr;
 #define WALLOC_LINUX_NO_PROT_NONE // up to a 3x or 5x slowdown if not defined
 #endif
 
+#ifdef WALLOC_FASTISH
+#define WALLOC_LINUX_PREUNPROTECT
+#define WALLOC_LINUX_NO_PROT_NONE
+#endif
+
 #ifdef WALLOC_FAST
-#define WALLOC_LINUX_PREUNPROTECT // allows skipping first commit stage, which involves a lock
+#define WALLOC_LINUX_PREUNPROTECT
 #define WALLOC_NOZERO
 #define WALLOC_LINUX_NO_PROT_NONE
 #endif
@@ -140,7 +145,11 @@ size_t _walloc_tls_to_shared_cap_keep = 0;
 extern "C" void * _walloc_raw_malloc(size_t n)
 {
     #ifdef WALLOC_SYS_MALLOC
-    return malloc(n);
+    #ifdef WALLOC_NOZERO
+        return malloc(n);
+    #else
+        return calloc(1, n);
+    #endif
     
     #else
     
@@ -291,8 +300,8 @@ extern "C" void * _walloc_raw_calloc(size_t c, size_t n)
     #else
     
     auto r = _walloc_raw_malloc(c*n);
-    #ifdef WALLOC_NOZERO
-    memset(r, 0, WAllocHeaderPtr(((char*)p)-WALLOC_OFFS)->size);
+    #ifndef WALLOC_NOZERO
+    memset(r, 0, c*n);
     #endif
     return r;
     #endif
@@ -438,6 +447,8 @@ static inline void _walloc_commit(char * loc, size_t over)
 }
 static inline void _walloc_recommit(char * p2, size_t s)
 {
+    (void)p2;
+    (void)s;
     #ifndef WALLOC_WINDOWS_NO_DECOMMIT
     if (s)
         assert(VirtualAlloc(p2, s, MEM_COMMIT, PAGE_READWRITE));
@@ -528,6 +539,8 @@ static inline void _walloc_commit(char * loc, size_t over)
 }
 static inline void _walloc_recommit(char * p2, size_t s)
 {
+    (void)p2;
+    (void)s;
 #ifndef WALLOC_LINUX_NO_PROT_NONE
     if (s)
     {
