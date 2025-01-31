@@ -250,6 +250,8 @@ static size_t GC_TABLE_BITS = 16ULL;
 static size_t GC_TABLE_SIZE = (1ULL<<GC_TABLE_BITS);
 static size_t *** gc_table = (size_t ***)_walloc_raw_calloc(GC_TABLE_SIZE, sizeof(size_t **));
 
+Mutex _gc_table_mutex;
+
 static inline int _gc_table_push(char * p)
 {
     enforce_not_main_thread();
@@ -287,7 +289,8 @@ static double secs_sweep = 0.0;
 #define GC_MSG_QUEUE_SIZE 75000
 #endif
 
-struct _GcCmdlist {
+struct _GcCmdlist
+{
     char ** list = (char **)_malloc(GC_MSG_QUEUE_SIZE * sizeof(char *));
     size_t len = 0;
 };
@@ -299,13 +302,25 @@ static std::atomic_uint32_t _gc_threads_must_wait_for_gc = 0;
 static thread_local _GcCmdlist gc_cmd; // write
 
 struct GcThreadRegInfo;
-static std::mutex _thread_info_mutex;
+static Mutex _thread_info_mutex;
 static GcThreadRegInfo * _thread_info_list = 0;
 static thread_local GcThreadRegInfo * _thread_info = 0;
 
 static std::atomic_uint32_t _gc_signal_atomic = 0;
 static std::atomic_uint32_t _gc_baton_atomic = 0;
 static std::atomic_uint32_t _thread_count = 0;
+
+static inline void _gc_apply_cmds(_GcCmdlist * gc_cmd)
+{
+    _gc_table_mutex.lock();
+    for (ptrdiff_t i = gc_cmd->len; i > 0; i--)
+    {
+        char * c = gc_cmd->list[i-1];
+        _gc_table_push(c);
+    }
+    gc_cmd->len = 0;
+    _gc_table_mutex.unlock();
+}
 
 // called by main thread
 static void _gc_safepoint_impl_os();
@@ -335,16 +350,22 @@ static inline void _gc_safepoint(size_t inc)
 {
     static thread_local size_t n = 0;
     n = n+inc;
-    if (n >= GC_MSG_QUEUE_SIZE || _gc_threads_must_wait_for_gc.load())
+    if (_gc_threads_must_wait_for_gc.load() || n >= GC_MSG_QUEUE_SIZE)
     {
+        _gc_apply_cmds(&gc_cmd);
         n = 0;
+    }
+    if (_gc_threads_must_wait_for_gc.load())
+    {
         retry:
         _gc_safepoint_impl();
-        if (gc_cmd.len != 0 || _gc_threads_must_wait_for_gc.load())
+        /*
+        if (_gc_threads_must_wait_for_gc.load())
         {
             //assert(0);
             goto retry;
         }
+        */
     }
 }
 
@@ -577,7 +598,6 @@ void _gc_scan_unsanitary(size_t * stack, size_t * stack_top, GcListNode ** rootl
     _GC_SCAN(stack, stack_top, rootlist)
 }
 
-
 static inline size_t _gc_context_size;
 static inline size_t _gc_context_get_rsp(Context *);
 static inline size_t _gc_context_get_rip(Context *);
@@ -603,6 +623,8 @@ static inline unsigned long int _gc_loop(void *)
         
         _thread_info_mutex.lock();
         
+        //_gc_table_mutex.lock();
+        
         fence();
         
         //puts("a2.x");
@@ -618,6 +640,8 @@ static inline unsigned long int _gc_loop(void *)
         _gc_threads_must_wait_for_gc.store(0);
         //puts("a3");
         
+        //_gc_table_mutex.unlock();
+        
         fence();
         
         double start_start_time = get_time();
@@ -628,23 +652,20 @@ static inline unsigned long int _gc_loop(void *)
         ///// receive hashtable update commands from main thread phase
         /////
         
+        /*
         start_time = get_time();
         
         top = _thread_info_list;
         while (top)
         {
-            for (ptrdiff_t i = top->gc_cmd->len; i > 0; i--)
-            {
-                char * c = top->gc_cmd->list[i-1];
-                _gc_table_push(c);
-            }
-            top->gc_cmd->len = 0;
+            _gc_apply_cmds(top->gc_cmd);
             top = top->next;
         }
         
         secs_cmd += get_time() - start_time;
         
         if (!silent) puts("-- cmdlist updated");
+        */
         
         /////
         ///// root collection phase
@@ -770,6 +791,8 @@ static inline unsigned long int _gc_loop(void *)
         ///// sweep phase
         /////
         
+        _gc_table_mutex.lock();
+        
         if (!silent) printf("number of found allocations: %zd over %zd words\n", n, _gc_scan_word_count);
         if (!silent) fflush(stdout);
         start_time = get_time();
@@ -837,6 +860,8 @@ static inline unsigned long int _gc_loop(void *)
             
             _walloc_raw_free(old_table);
         }
+        
+        _gc_table_mutex.unlock();
         
         //puts("j");
     }
