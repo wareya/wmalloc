@@ -23,4 +23,4 @@ CC0 (public domain)
 
 ## Why C++ instead of C?
 
-thread_local with RAII lol
+thread_local variables with destructors so that they're not a ✨heaping mess of unsafe static destruction handlers✨ like most C codebases are lol
