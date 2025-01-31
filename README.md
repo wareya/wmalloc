@@ -1,6 +1,8 @@
+# Walloc/WMalloc
+
 Threadsafe malloc/free/calloc/realloc implementation using raw OS primitives on Windows and Linux (other unixes may be supported but have not been tested).
 
-Include only in a single compilation unit, and re-export wrapper functions from there if your project has more than one compilation unit.
+Include only in a single compilation unit, and re-export wrapper functions from there if your project has more than one compilation unit. (The relevant functions are marked as `extern "C"`, so you can do this to use it from a C-only codebase, too.)
 
 Features:
 
@@ -14,3 +16,11 @@ Features:
 - Control over the safety-vs-performance tradeoffs the allocator makes, especially on linux, via defines before inclusion
 - Control over allocation alignment and bump alignment via defines
 - CC0 license (public domain)
+
+## License
+
+CC0 (public domain)
+
+## Why C++ instead of C?
+
+thread_local with RAII lol
