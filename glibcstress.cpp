@@ -1,9 +1,23 @@
+// custom malloc
+/*
+#define WALLOC_CUSTOMALIGN 32
+#define WALLOC_CACHEHINT 64
+#include "wmalloc.hpp"
+#define malloc _walloc_raw_malloc
+#define calloc _walloc_raw_calloc
+#define realloc _walloc_raw_realloc
+#define free _walloc_raw_free
+*/
+
+//#define GC_NO_PREFIX
+
 #include <thread>
 #include <vector>
 #include <atomic>
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
+using namespace std;
 
 // mimalloc
 //#include <mimalloc.h>
@@ -11,25 +25,14 @@
 //#define free mi_free
 
 // glibc
-//__attribute__((optnone)) void * _malloc(size_t n) { return malloc(n); }
-//#define malloc _malloc
-
-// boehm
-#define GC_THREADS
-#include <gc.h>
-#define malloc(X) GC_malloc((X))
-#define free(X) GC_free((X))
+__attribute__((optnone)) void * _malloc(size_t n) { return malloc(n); }
+#define malloc _malloc
 
 std::atomic_int tc = 0;
 
-using namespace std;
-
 int * ptrs[512][8];
-unsigned long looper(void *)
+void looper()
 {
-    #ifdef GC_INIT
-    GC_INIT();
-    #endif
     
     int unique = tc.fetch_add(1);
     for (int i = 0; i < 1000000; ++i)
@@ -58,29 +61,24 @@ unsigned long looper(void *)
             free(ptrs[unique][j]);
         }
     }
-    return 0;
+    //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
+    //printf("!!!! thread %zd finished !!!!\n", _thread_info->alt_id);
+    fflush(stdout);
 }
-
-#include <pthread.h>
 
 int main()
 {
-    #ifdef GC_INIT
-    GC_INIT();
-    #endif
-    
     int threadcount = 32;
-    vector<HANDLE> threads;
+    vector<thread> threads;
     
     for (int i = 0; i < threadcount; ++i)
-        threads.emplace_back(CreateThread(nullptr, 0, &looper, 0, 0, 0));
-
-    for (HANDLE thread : threads)
+        threads.emplace_back(looper);
+    
+    for (auto & thread : threads)
     {
-        WaitForSingleObject(thread, INFINITE);
-        CloseHandle(thread);
+        thread.join();
     }
-
+    
     puts("Done!");
     return 0;
 }

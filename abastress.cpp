@@ -9,8 +9,17 @@
 #define free _walloc_raw_free
 */
 
+//#define GC_NO_PREFIX
+
 #include "gc.hpp"
+void * X_malloc(size_t n)
+{
+    auto r = gc_malloc(n);
+    gc_set_trace_none(r);
+    return r;
+}
 #define malloc(X) gc_malloc((X))
+//#define malloc(X) X_malloc((X))
 #define free(X) gc_free((X))
 #define realloc(X, Y) gc_realloc((X), (Y))
 #define calloc(X, Y) gc_malloc((X)*(Y))
@@ -40,7 +49,7 @@ void looper()
     gc_add_current_thread();
     
     int unique = tc.fetch_add(1);
-    for (int i = 0; i < 100000; ++i)
+    for (int i = 0; i < 1000000; ++i)
     {
         for (int j = 0; j < 8; j++)
         {
@@ -73,7 +82,7 @@ void looper()
 
 int main()
 {
-    int threadcount = 8;
+    int threadcount = 32;
     vector<thread> threads;
     
     for (int i = 0; i < threadcount; ++i)
