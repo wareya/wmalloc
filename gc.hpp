@@ -289,10 +289,10 @@ static double secs_sweep = 0.0;
 
 #ifndef GC_MSG_QUEUE_SIZE
 // number of allocations (size-adjusted) before GC happens
-// larger number = more hash table collisions, better use of context switches
+// larger number = more hash table collisions, better use of context switches, greater passive memory usage
 // lower number = more context switches and worse cache usage, shorter individual pauses
-// default: 75000
-#define GC_MSG_QUEUE_SIZE 75000
+// default: 4000
+#define GC_MSG_QUEUE_SIZE 4000
 #endif
 
 struct _GcCmdlist
@@ -370,11 +370,6 @@ static inline void _gc_safepoint(size_t inc)
         
         retry:
         _gc_safepoint_impl();
-        if (_gc_threads_must_wait_for_gc.load())
-        {
-            assert(0);
-            goto retry;
-        }
     }
 }
 
@@ -403,7 +398,7 @@ extern "C" void * gc_malloc(size_t n)
     
     _gc_set_color((char *)p, GC_WHITE);
     
-    assert(gc_cmd.len < GC_MSG_QUEUE_SIZE);
+    //assert(gc_cmd.len < GC_MSG_QUEUE_SIZE);
     gc_cmd.list[gc_cmd.len++] = p;
     
     return (void *)(p);
@@ -902,7 +897,7 @@ static inline unsigned long int _gc_loop(void *)
             size.fetch_add(size_2);
         };
         
-        if (GC_TABLE_BITS > 18)
+        if (GC_TABLE_BITS >= 16)
         {
             std::thread threads[8] = {};
             for (size_t i = 0; i < 8; i++)
