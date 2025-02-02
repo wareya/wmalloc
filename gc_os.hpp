@@ -19,14 +19,12 @@ static inline void _gc_thread_suspend(GcThreadRegInfo * info)
     auto & ctx = *info->context;
     ctx.ctx.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL | CONTEXT_FLOATING_POINT | CONTEXT_DEBUG_REGISTERS;
     
-    int retries = 1000;
-    
-    retry:
     DWORD rval = SuspendThread((HANDLE)info->alt_id);
-    int nx = 100000;
+    int nx = 1000;
     while (rval == (DWORD)-1 && nx-- > 0)
     {
         std::this_thread::yield();
+        Sleep(0);
         rval = SuspendThread((HANDLE)info->alt_id);
     }
     assert(rval != (DWORD)-1);
@@ -35,7 +33,15 @@ static inline void _gc_thread_suspend(GcThreadRegInfo * info)
 
 static inline void _gc_thread_unsuspend(GcThreadRegInfo * info)
 {
-    ResumeThread((HANDLE)info->alt_id);
+    DWORD rval = ResumeThread((HANDLE)info->alt_id);
+    int nx = 1000;
+    while (rval == (DWORD)-1 && nx-- > 0)
+    {
+        std::this_thread::yield();
+        Sleep(0);
+        rval = ResumeThread((HANDLE)info->alt_id);
+    }
+    assert(rval != (DWORD)-1);
 }
 static inline size_t _gc_context_get_rsp(Context * ctx)
 {
@@ -119,6 +125,7 @@ static inline void gc_run_startup()
 static size_t _gc_thread = 0;
 extern "C" int gc_start()
 {
+    gc_table = (size_t ***)_walloc_raw_calloc(GC_TABLE_SIZE, sizeof(size_t **));
     gc_run_startup();
     
     std::atomic_uint8_t dummy;
@@ -292,6 +299,7 @@ static inline void * _gc_loop_wrapper(void * x)
 static pthread_t _gc_thread = 0;
 extern "C" int gc_start()
 {
+    gc_table = (size_t ***)_walloc_raw_calloc(GC_TABLE_SIZE, sizeof(size_t **));
     gc_run_startup();
     
     std::atomic_uint8_t dummy;
