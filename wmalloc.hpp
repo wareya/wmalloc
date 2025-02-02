@@ -97,29 +97,23 @@ static std::atomic<size_t> _walloc_heap_free_cap[64] = {};
 static std::atomic<WAllocHeaderPtr> _walloc_heap_free[64] = {};
 
 // threadlocal freelists
-static thread_local WAllocHeaderPtr _walloc_heap_free_tls[64];
-static thread_local size_t _walloc_heap_free_cap_tls[64];
+static thread_local size_t _walloc_heap_free_cap_tls[64] = {};
+struct WAllocFreeList {
+    WAllocHeaderPtr list[64] = {};
+    WAllocHeaderPtr & operator[](size_t n) { return list[n]; }
+    const WAllocHeaderPtr & operator[](size_t n) const { return list[n]; }
+    ~WAllocFreeList();
+};
+static thread_local WAllocFreeList _walloc_heap_free_tls;
 
 static inline void _walloc_flush_freelists();
-struct WAllocTLSCanary
-{
-    WAllocHeaderPtr * list;
-    size_t * cap;
-    WAllocTLSCanary()
-    {
-        //puts("a");
-        list = _walloc_heap_free_tls;
-        cap = _walloc_heap_free_cap_tls;
-    }
-    ~WAllocTLSCanary() { _walloc_flush_freelists(); }
-};
-static thread_local WAllocTLSCanary _walloc_heap_free_canary __attribute__((init_priority(101))) = WAllocTLSCanary();
+WAllocFreeList::~WAllocFreeList() { _walloc_flush_freelists(); }
 
 static inline void _walloc_flush_freelists()
 {
     for (size_t bin = 0; bin < 64; bin++)
     {
-        size_t n = 1 << bin;
+        size_t n = 1ULL << bin;
         auto last = _walloc_heap_free_tls[bin];
         if (!last) continue;
         size_t consumed = n;
@@ -133,11 +127,11 @@ static inline void _walloc_flush_freelists()
         _walloc_heap_free_tls[bin] = (WAllocHeaderPtr)last->next;
         
         _walloc_free_mtx.lock();
-        std::atomic_thread_fence(std::memory_order_acq_rel);
+        fence();
             last->next = (size_t **)_walloc_heap_free[bin].load(std::memory_order_acquire);
             _walloc_heap_free[bin].store(top, std::memory_order_release);
             _walloc_heap_free_cap[bin].fetch_add(consumed, std::memory_order_acq_rel);
-        std::atomic_thread_fence(std::memory_order_acq_rel);
+        fence();
         _walloc_free_mtx.unlock();
     }
 }
@@ -188,13 +182,23 @@ extern "C" void _walloc_raw_free(void * p);
 //size_t _walloc_shared_to_tls_cap = getenv("WALLOC_A") ? atoi(getenv("WALLOC_A")) : (256);
 //size_t _walloc_tls_to_shared_trigger = getenv("WALLOC_B") ? atoi(getenv("WALLOC_B")) : (2048);
 //size_t _walloc_tls_to_shared_cap_keep = getenv("WALLOC_C") ? atoi(getenv("WALLOC_C")) : (256);
+#ifdef WALLOC_PULL_OVERRIDE
+const size_t _walloc_shared_to_tls_cap = WALLOC_PULL_OVERRIDE;
+#else
 const size_t _walloc_shared_to_tls_cap = 256;
+#endif
+
 #ifdef WALLOC_FLUSH_OVERRIDE
 const size_t _walloc_tls_to_shared_trigger = WALLOC_FLUSH_OVERRIDE;
 #else
 const size_t _walloc_tls_to_shared_trigger = 2048;
 #endif
+
+#ifdef WALLOC_FLUSH_KEEP_OVERRIDE
+const size_t _walloc_tls_to_shared_cap_keep = WALLOC_FLUSH_KEEP_OVERRIDE;
+#else
 const size_t _walloc_tls_to_shared_cap_keep = 256;
+#endif
 
 extern "C" void * _walloc_raw_malloc(size_t n)
 {
@@ -213,8 +217,6 @@ extern "C" void * _walloc_raw_malloc(size_t n)
     
     n = 1ULL << (64-__builtin_clzll(n-1));
     int bin = __builtin_ctzll(n);
-    
-    bool has_free = !!_walloc_heap_free_tls[bin];
     
     #ifdef WALLOC_GLOBAL_FREELIST
     
@@ -249,15 +251,16 @@ extern "C" void * _walloc_raw_malloc(size_t n)
     
     #else
     
-    if (!has_free)
+    if (!_walloc_heap_free_tls[bin])
     {
+            _walloc_free_mtx.lock();
+            fence();
         auto cap = _walloc_heap_free_cap[bin].load(std::memory_order_acquire);
         if (cap >= 1)
         {
             // try to acquire up to _walloc_shared_to_tls_cap worth of objects
             // (might fail and produce no objects and that's OK)
-            _walloc_free_mtx.lock();
-            std::atomic_thread_fence(std::memory_order_acq_rel);
+            fence();
             auto top = _walloc_heap_free[bin].load(std::memory_order_acquire);
             if (top)
             {
@@ -278,9 +281,11 @@ extern "C" void * _walloc_raw_malloc(size_t n)
                 _walloc_heap_free_cap_tls[bin] += consumed;
                 std::atomic_thread_fence(std::memory_order_acq_rel);
             }
-            else
-                _walloc_free_mtx.unlock();
+            //else
+            fence();
         }
+                _walloc_free_mtx.unlock();
+                fence();
     }
     
     if (_walloc_heap_free_tls[bin])
@@ -396,10 +401,6 @@ extern "C" void _walloc_raw_free(void * _p)
     //if (!WAllocHeaderPtr(p)->size) return; // double free
     //assert(WAllocHeaderPtr(p)->size); // double free
     
-    
-    /// ??????????????????????????
-    //assert(_walloc_heap_free_canary.list == _walloc_heap_free_tls);
-    
     size_t n = WAllocHeaderPtr(p)->size;
     size_t _n = n; // for viewing with debuggers
     (void) _n;
@@ -420,10 +421,10 @@ extern "C" void _walloc_raw_free(void * _p)
     #ifdef WALLOC_GLOBAL_FREELIST
     
     _walloc_free_mtx.lock();
-    std::atomic_thread_fence(std::memory_order_acq_rel);
+    fence();
     gp->next = (size_t **)_walloc_heap_free[bin].load(std::memory_order_acquire);
     _walloc_heap_free[bin].store(gp, std::memory_order_release);
-    std::atomic_thread_fence(std::memory_order_acq_rel);
+    fence();
     _walloc_free_mtx.unlock();
     
     #else
@@ -450,11 +451,11 @@ extern "C" void _walloc_raw_free(void * _p)
         _walloc_heap_free_tls[bin] = (WAllocHeaderPtr)last->next;
         
         _walloc_free_mtx.lock();
-        std::atomic_thread_fence(std::memory_order_acq_rel);
+        fence();
             last->next = (size_t **)_walloc_heap_free[bin].load(std::memory_order_acquire);
             _walloc_heap_free[bin].store(top, std::memory_order_release);
             _walloc_heap_free_cap[bin].fetch_add(consumed, std::memory_order_acq_rel);
-        std::atomic_thread_fence(std::memory_order_acq_rel);
+        fence();
         _walloc_free_mtx.unlock();
     }
     

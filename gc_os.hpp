@@ -7,6 +7,7 @@
 #define VC_EXTRALEAN
 #include <windows.h>
 #include <psapi.h>
+#include <processthreadsapi.h>
 
 struct Context { CONTEXT ctx; };
 static inline Context * _gc_get_threadlocal_ctx()
@@ -140,7 +141,9 @@ extern "C" int gc_start()
 extern "C" int gc_end()
 {
     _gc_stop = 1;
-    WaitForSingleObject((HANDLE)_gc_thread, 0);
+    puts("waiting for GC thread to stop...");
+    auto r = WaitForSingleObject((HANDLE)_gc_thread, INFINITE);
+    printf("??? %d\n", r);
     fence();
     CloseHandle((HANDLE)_gc_thread);
     _gc_thread = 0;

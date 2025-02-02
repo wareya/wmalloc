@@ -17,11 +17,11 @@
 using namespace std;
 
 // mimalloc
-#include <mimalloc.h>
+//#include <mimalloc.h>
 
 #define GC_NO_PREFIX
 //#define GC_SYSTEM_MALLOC
-#define GC_SYSTEM_MALLOC_PREFIX(X) mi_ ## X
+//#define GC_SYSTEM_MALLOC_PREFIX(X) mi_ ## X
 #include "gc.hpp"
 void * X_malloc(size_t n)
 {
@@ -86,7 +86,7 @@ void looper()
         }
     }
     //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
-    //printf("!!!! thread %zd finished !!!!\n", _thread_info->alt_id);
+    printf("!!!! thread %zd (id %zd) finished !!!!\n", _thread_info->alt_id, unique);
     fflush(stdout);
 }
 
