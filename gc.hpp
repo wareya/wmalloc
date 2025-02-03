@@ -57,9 +57,9 @@ struct WAllocHeader
 };
 typedef WAllocHeader GcAllocHeader;
 typedef WAllocHeader * GcAllocHeaderPtr;
-#define WALLOC_PULL_OVERRIDE 100000
-#define WALLOC_FLUSH_OVERRIDE 100000000
-#define WALLOC_FLUSH_KEEP_OVERRIDE 0
+#define WALLOC_PULL_OVERRIDE 256
+#define WALLOC_FLUSH_OVERRIDE 10000000000
+//#define WALLOC_FLUSH_KEEP_OVERRIDE 0
 //#define WALLOC_FASTISH
 #define WALLOC_CACHEHINT 64
 #include "wmalloc.hpp"
@@ -777,9 +777,13 @@ static inline void sweeper(
                 
                 size_2 += _gc_get_size(c);
                 
+                auto s = _gc_get_size(c);
+                
                 #ifndef GC_NO_PREFIX
+                //memset((void *)c-GCOFFS, 0xA5, s+GCOFFS);
                 _free((void *)(c-GCOFFS));
                 #else
+                //memset((void *)c, 0xA5, s);
                 _free((void *)c);
                 #endif
                 n3_2 += 1;
@@ -1100,6 +1104,7 @@ static inline unsigned long int _gc_loop(void *)
         std::atomic_size_t filled_num = 0;
         std::atomic_size_t size = 0;
         
+        fence();
         if (GC_TABLE_BITS >= 16)
         {
             std::vector<std::thread> threads;
@@ -1115,6 +1120,8 @@ static inline unsigned long int _gc_loop(void *)
         }
         else
             sweeper(&filled_num, &size, &n3, 0, GC_TABLE_SIZE);
+        
+        fence();
         
         if (_gc_stop.load()) break;
         

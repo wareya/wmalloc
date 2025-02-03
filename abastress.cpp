@@ -19,8 +19,8 @@ using namespace std;
 // mimalloc
 //#include <mimalloc.h>
 
-#define GC_NO_PREFIX
-//#define GC_SYSTEM_MALLOC
+//#define GC_NO_PREFIX
+#define GC_SYSTEM_MALLOC
 //#define GC_SYSTEM_MALLOC_PREFIX(X) mi_ ## X
 #include "gc.hpp"
 void * X_malloc(size_t n)
@@ -48,6 +48,17 @@ std::atomic_int tc = 0;
 typedef size_t alloc_type;
 
 alloc_type * ptrs[512][8];
+
+void dumpall(size_t i)
+{
+    printf("thread %zd:\n", i);
+    for (size_t j = 0; j < 8; j++)
+        printf("alloc %zd: %p\n", j, (void *)ptrs[i][j]);
+    puts("----");
+}
+
+const size_t factor = 1024;
+
 void looper()
 {
     gc_add_current_thread();
@@ -58,13 +69,21 @@ void looper()
         for (int j = 0; j < 8; j++)
         {
             ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)));
-            *ptrs[unique][j] = j+unique*1523;
+            *ptrs[unique][j] = j+unique*factor;
         }
         for (int j = 8; j > 0; j--)
         {
-            if (*ptrs[unique][j-1] != j-1+unique*1523)
+            if (*ptrs[unique][j-1] != j-1+unique*factor)
             {
-                printf("%016zX %016zX\n", *ptrs[unique][j-1], j-1+unique*1523);
+                size_t other_unique = (*ptrs[unique][j-1])/factor;
+                size_t other_j = (*ptrs[unique][j-1]) % factor;
+                alloc_type * evidence = std::atomic_ref(ptrs[other_unique][other_j]).load();
+                printf("%p\n", (void *)evidence);
+                printf("%p\n", (void *)ptrs[unique][j-1]);
+                printf("(%zd %d) %016zu %016zu\n", unique, j, *ptrs[unique][j-1], j-1+unique*factor);
+                printf("%zd\n", other_j);
+                dumpall(unique);
+                dumpall(other_unique);
                 assert(((void)"memory corruption! (FILO)", 0));
             }
             free(ptrs[unique][j-1]);
@@ -73,13 +92,21 @@ void looper()
         for (int j = 0; j < 8; j++)
         {
             ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)));
-            *ptrs[unique][j] = j+unique*1523;
+            *ptrs[unique][j] = j+unique*factor;
         }
         for (int j = 0; j < 8; j++)
         {
-            if (*ptrs[unique][j] != j+unique*1523)
+            if (*ptrs[unique][j] != j+unique*factor)
             {
-                printf("%016zX %016zX\n", *ptrs[unique][j], j+unique*1523);
+                size_t other_unique = (*ptrs[unique][j])/factor;
+                size_t other_j = (*ptrs[unique][j]) % factor;
+                alloc_type * evidence = std::atomic_ref(ptrs[other_unique][other_j]).load();
+                printf("%p\n", (void *)evidence);
+                printf("%p\n", (void *)ptrs[unique][j]);
+                printf("(%zd %d) %016zu %016zu\n", unique, j, *ptrs[unique][j], j+unique*factor);
+                printf("%zd\n", other_j);
+                dumpall(unique);
+                dumpall(other_unique);
                 assert(((void)"memory corruption! (FIFO)", 0));
             }
             free(ptrs[unique][j]);
