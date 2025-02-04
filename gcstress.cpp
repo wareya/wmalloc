@@ -62,6 +62,8 @@ const size_t factor = 1024;
 
 std::mutex badlock;
 
+unsigned int threadcount = 32;
+
 void looper()
 {
     gc_add_current_thread();
@@ -69,78 +71,102 @@ void looper()
     int shlamnt = 32;
     
     size_t unique = tc.fetch_add(1);
+    
+    alloc_type ** volatile local_ptrs;
+    local_ptrs = ptrs[unique];
+    (void)local_ptrs;
+    
     for (int i = 0; i < 100000; ++i)
     {
         size_t s = 1ULL << (i%20);
         
-            badlock.lock();
         for (int j = 0; j < 8; j++)
         {
-            badlock.unlock();
-            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)*s));
+            std::atomic_ref(ptrs[unique][j]).store((alloc_type *)(malloc(sizeof(alloc_type)*s)));
+            fence();
             *ptrs[unique][j] = j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt);
-            badlock.lock();
         }
-            badlock.unlock();
+        
         for (int j = 8; j > 0; j--)
         {
             auto val = *ptrs[unique][j-1];
             if (val != j-1+unique*factor + (size_t(ptrs[unique][j-1])<<shlamnt))
             {
-                badlock.lock();
+                fence();
                 size_t other_unique = (val)/factor;
                 size_t other_j = (val) % factor;
+                
+                for (size_t a = 0; a < threadcount; a++)
+                {
+                    if (a == unique) continue;
+                    for (size_t b = 0; b < 8; b++)
+                    {
+                        if (std::atomic_ref(ptrs[a][b]).load() == ptrs[unique][j-1])
+                        {
+                            other_unique = a;
+                            other_j = b;
+                            break;
+                        }
+                    }
+                }
+                
                 alloc_type * evidence = std::atomic_ref(ptrs[other_unique][other_j]).load();
                 printf("%p\n", (void *)evidence);
                 printf("%p\n", (void *)ptrs[unique][j-1]);
                 printf("(%zd %d) %016zX %016zX\n", unique, j, val, j-1+unique*factor + (size_t(ptrs[unique][j-1])<<shlamnt));
                 printf("(%zd %d) %016zu %016zu\n", unique, j, val, j-1+unique*factor + (size_t(ptrs[unique][j-1])<<shlamnt));
-                printf("%zd\n", other_j);
+                printf("%zd %zd\n", other_unique, other_j);
                 dumpall(other_unique);
                 dumpall(unique);
-                badlock.unlock();
+                
                 assert(((void)"memory corruption! (FILO)", 0));
             }
             free(ptrs[unique][j-1]);
         }
         
-        for (size_t i = 0; i < 20000; i++)
-            std::this_thread::yield();
-        
-        badlock.lock();
         for (int j = 0; j < 8; j++)
         {
-            badlock.unlock();
-            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)*s));
+            std::atomic_ref(ptrs[unique][j]).store((alloc_type *)(malloc(sizeof(alloc_type)*s)));
+            fence();
             *ptrs[unique][j] = j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt);
-            badlock.lock();
         }
-        badlock.unlock();
         
         for (int j = 0; j < 8; j++)
         {
             auto val = *ptrs[unique][j];
             if (val != j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt))
             {
-                badlock.lock();
+                fence();
                 size_t other_unique = (val)/factor;
                 size_t other_j = (val) % factor;
+                
+                for (size_t a = 0; a < threadcount; a++)
+                {
+                    if (a == unique) continue;
+                    for (size_t b = 0; b < 8; b++)
+                    {
+                        if (std::atomic_ref(ptrs[a][b]).load() == ptrs[unique][j])
+                        {
+                            other_unique = a;
+                            other_j = b;
+                            break;
+                        }
+                    }
+                }
+                
                 alloc_type * evidence = std::atomic_ref(ptrs[other_unique][other_j]).load();
                 printf("%p\n", (void *)evidence);
                 printf("%p\n", (void *)ptrs[unique][j]);
                 printf("(%zd %d) %016zu %016zX\n", unique, j, val, j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt));
                 printf("(%zd %d) %016zu %016zu\n", unique, j, val, j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt));
-                printf("%zd\n", other_j);
+                printf("%zd %zd\n", other_unique, other_j);
                 dumpall(other_unique);
                 dumpall(unique);
-                badlock.unlock();
+                
                 assert(((void)"memory corruption! (FIFO)", 0));
             }
             free(ptrs[unique][j]);
         }
-        
-        for (size_t i = 0; i < 20000; i++)
-            std::this_thread::yield();
     }
     //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
     printf("!!!! thread %zd (id %zd) finished !!!!\n", _thread_info->alt_id, unique);
@@ -151,7 +177,6 @@ int main()
 {
     gc_add_current_thread();
     
-    unsigned int threadcount = 32;
     ptrs = (alloc_type ***)malloc(sizeof(alloc_type **) * threadcount);
     for (size_t i = 0; i < threadcount; i++)
     {

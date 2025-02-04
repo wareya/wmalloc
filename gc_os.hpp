@@ -143,7 +143,7 @@ extern "C" int gc_end()
     _gc_stop = 1;
     puts("waiting for GC thread to stop...");
     auto r = WaitForSingleObject((HANDLE)_gc_thread, INFINITE);
-    printf("??? %d\n", r);
+    printf("??? %ld\n", r);
     fence();
     CloseHandle((HANDLE)_gc_thread);
     _gc_thread = 0;
