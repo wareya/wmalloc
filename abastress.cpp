@@ -64,11 +64,13 @@ void looper()
     gc_add_current_thread();
     
     size_t unique = tc.fetch_add(1);
-    for (int i = 0; i < 1000000; ++i)
+    for (int i = 0; i < 100000; ++i)
     {
+        size_t s = 1ULL << (i%20);
+        
         for (int j = 0; j < 8; j++)
         {
-            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)));
+            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)*s));
             *ptrs[unique][j] = j+unique*factor;
         }
         for (int j = 8; j > 0; j--)
@@ -91,7 +93,7 @@ void looper()
         
         for (int j = 0; j < 8; j++)
         {
-            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)));
+            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)*s));
             *ptrs[unique][j] = j+unique*factor;
         }
         for (int j = 0; j < 8; j++)

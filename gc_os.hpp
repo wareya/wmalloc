@@ -56,7 +56,7 @@ static inline size_t _gc_context_get_size()
 {
     return sizeof(CONTEXT);
 }
-static inline void _gc_safepoint_impl_os()
+static inline void _gc_safepoint_setup_os()
 {
 }
 static inline void _gc_get_data_sections()
@@ -176,21 +176,21 @@ static GcCanary _gc_canary = GcCanary();
 #include <ucontext.h>
 
 struct Context { struct ucontext_t ctx; };
-static Context _gc_ctx = {};
+static thread_local Context ctx = {};
 
+static inline Context * _gc_get_threadlocal_ctx()
+{
+    return &ctx;
+}
 static inline void _gc_thread_suspend(GcThreadRegInfo * info)
 {
     // not done on linux
+    (void)info;
 }
 static inline void _gc_thread_unsuspend(GcThreadRegInfo * info)
 {
-    // handled in _gc_safepoint_impl_os
-}
-static inline Context * _gc_suspend_main_and_get_context()
-{
-    // context acquisition handled by main thread
-    // suspension handled by lock
-    return &_gc_ctx;
+    // handled in _gc_safepoint_setup_os
+    (void)info;
 }
 static inline size_t _gc_context_get_rsp(Context * ctx)
 {
@@ -208,10 +208,16 @@ static inline void _gc_unsuspend_main()
 {
     // handled by lock
 }
-
-static inline void _gc_safepoint_impl_os()
+static inline void _gc_thread_id_release(size_t id)
 {
-    assert(!getcontext(&_gc_ctx.ctx));
+    (void)id;
+    // not needed on linux
+}
+
+static inline void _gc_safepoint_setup_os()
+{
+    assert(!getcontext(&ctx.ctx));
+    //puts("got context!");
 }
 
 static inline size_t _gc_get_heap_start()
@@ -279,6 +285,20 @@ static inline size_t _gc_get_stack_hi()
     pthread_attr_destroy(&attr);
     return lo + size;
 }
+static inline size_t _gc_get_stack_lo()
+{
+    size_t lo;
+    size_t size;
+    pthread_attr_t attr;
+    pthread_getattr_np(pthread_self(), &attr);
+    pthread_attr_getstack(&attr, (void **)&lo, &size);
+    pthread_attr_destroy(&attr);
+    return lo;
+}
+static inline size_t _gc_thread_id_acquire()
+{
+    return gettid();
+}
 static inline void gc_run_startup()
 {
     _gc_get_data_sections();
@@ -317,7 +337,7 @@ extern "C" int gc_end()
 {
     puts("going to try to exit gc");
     _gc_stop = 1;
-    safepoint_mutex.unlock();
+    //safepoint_mutex.unlock();
     puts("mutex unlocked...?");
     
     puts("trying to join");

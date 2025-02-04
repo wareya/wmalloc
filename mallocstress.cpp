@@ -2,29 +2,17 @@
 #include <vector>
 #include <atomic>
 #include <mutex>
+#include <chrono>
+using namespace std::chrono_literals;
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
 using namespace std;
 
-// custom malloc
-//#define WALLOC_SYS_MALLOC
-//#define WALLOC_GLOBAL_FREELIST
-#define WALLOC_PULL_OVERRIDE (256*64)
-#define WALLOC_FLUSH_OVERRIDE (4096*32)
-#define WALLOC_FLUSH_KEEP_OVERRIDE 0
-#define WALLOC_MAXIMUM_FAST
-//#define WALLOC_CACHEHINT 64
-#include "wmalloc.hpp"
-#define malloc _walloc_raw_malloc
-#define calloc _walloc_raw_calloc
-#define realloc _walloc_raw_realloc
-#define free _walloc_raw_free
-
 // mimalloc
-//#include <mimalloc.h>
-//#define malloc mi_malloc
-//#define free mi_free
+#include <mimalloc.h>
+#define malloc mi_malloc
+#define free mi_free
 
 // glibc
 //__attribute__((optnone)) void * _malloc(size_t n) { return malloc(n); }
@@ -37,7 +25,7 @@ std::atomic_int mustexit;
 void freeloop()
 {
     //int i = 0;
-    while (!mustexit)
+    while (1)
     {
         //printf("%d\n", i++);
         global_tofree_list_mtx.lock();
@@ -48,6 +36,13 @@ void freeloop()
         for (auto & p : global_tofree_list)
             free(p);
         global_tofree_list.clear();
+        
+        if (mustexit)
+        {
+            global_tofree_list_mtx.unlock();
+            return;
+        }
+        
         /*
         while (global_tofree_list.size())
         {
@@ -78,17 +73,17 @@ void looper()
         }
     };
     int unique = tc.fetch_add(1);
-    for (int i = 0; i < 1000000; ++i)
+    for (int i = 0; i < 100000; ++i)
     {
         size_t s = 1ULL << (i%20);
         for (int j = 0; j < 8; j++)
         {
             ptrs[unique][j] = (int *)(malloc(s*sizeof(int)));
-            *ptrs[unique][j] = j+unique*1523;
+            *ptrs[unique][j] = j+unique*10000;
         }
         for (int j = 8; j > 0; j--)
         {
-            if (*ptrs[unique][j-1] != j-1+unique*1523)
+            if (*ptrs[unique][j-1] != j-1+unique*10000)
                 assert(((void)"memory corruption! (FILO)", 0));
             do_free(ptrs[unique][j-1]);
         }
@@ -96,15 +91,22 @@ void looper()
         for (int j = 0; j < 8; j++)
         {
             ptrs[unique][j] = (int *)(malloc(s*sizeof(int)));
-            *ptrs[unique][j] = j+unique*1523;
+            *ptrs[unique][j] = j+unique*10000;
         }
         for (int j = 0; j < 8; j++)
         {
-            if (*ptrs[unique][j] != j+unique*1523)
+            if (*ptrs[unique][j] != j+unique*10000)
                 assert(((void)"memory corruption! (FIFO)", 0));
             do_free(ptrs[unique][j]);
         }
     }
+    global_tofree_list_mtx.lock();
+    for (auto & p : tofree_list)
+        global_tofree_list.push_back(p);
+    global_tofree_list_mtx.unlock();
+    tofree_list.clear();
+    puts("thread done!");
+    std::this_thread::sleep_for(10000ms);
     //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
     //printf("!!!! thread %zd finished !!!!\n", _thread_info->alt_id);
     fflush(stdout);

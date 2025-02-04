@@ -370,8 +370,8 @@ extern "C" void * _walloc_raw_malloc(size_t n)
             
             #ifndef WALLOC_NOZERO
             memset(p, 0, n + WALLOC_OFFS);
-            for (int i = 0; i < orig_n; i++)
-                *((volatile char * volatile)(p+WALLOC_OFFS)) = 0x6B;
+            //for (int i = 0; i < orig_n; i++)
+            //    *((volatile char * volatile)(p+WALLOC_OFFS)) = 0x6B;
             #endif
             
             WAllocHeaderPtr(p)->size = n;

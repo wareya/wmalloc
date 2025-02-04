@@ -1,5 +1,5 @@
 #include <mutex>
-#include <shared_mutex>
+#include <condition_variable>
 #include <atomic>
 #include <thread>
 #include <assert.h>
@@ -45,23 +45,37 @@ static inline void gc_set_trace_none(void * alloc);
 // Size is in words, not bytes
 static inline void gc_add_custom_root_region(void ** alloc, size_t size);
 
+// Must be called once on startup from any thread that may uniquely hold GC'd pointers.
+// Not needed for the main thread, is called automatically.
+static inline void gc_add_current_thread();
+
+// Inside of synchronization spinloops you must call this at least once per loop iteration with an argument of 0.
+// (Or wrap the loop with the below "long" calls if the loop doesn't get/release/move GC'd memory.)
+static inline void gc_safepoint(size_t inc);
+
+// Must be called before and after doing anything that might take arbitrarily long, e.g. joining a thread, locking a mutex, etc.
+// If you have a deadlock during some operation, you probably need to call these around it.
+// While in a safepoint you cannot create or move any GC'd pointers on, into, or out of the safepointed thread.
+static inline void _gc_safepoint_long_start();
+static inline void _gc_safepoint_long_end();
+
 static inline void fence() { std::atomic_thread_fence(std::memory_order_seq_cst); }
 
 #define WALLOC_CUSTOMHEADER
 struct WAllocHeader
 {
     size_t size;
-    size_t ** next;
+    WAllocHeader * next;
     GcTraceFunc tracefn;
     size_t tracefndat;
 };
 typedef WAllocHeader GcAllocHeader;
 typedef WAllocHeader * GcAllocHeaderPtr;
-#define WALLOC_PULL_OVERRIDE 256
+//#define WALLOC_PULL_OVERRIDE 256
 #define WALLOC_FLUSH_OVERRIDE 10000000000
 //#define WALLOC_FLUSH_KEEP_OVERRIDE 0
-//#define WALLOC_FASTISH
-#define WALLOC_CACHEHINT 64
+//#define WALLOC_CACHEHINT 64
+#define WALLOC_FASTISH
 #include "wmalloc.hpp"
 
 #if (!defined(_WIN32)) && defined(GC_USE_LAZY_SPINLOCK)
@@ -298,7 +312,7 @@ static inline int _gc_table_push(char * p)
     size_t k = GC_TABLE_HASH((size_t)p);
     
     int ret = !!gc_table[k];
-    GcAllocHeaderPtr(p-GCOFFS)->next = gc_table[k];
+    GcAllocHeaderPtr(p-GCOFFS)->next = (GcAllocHeaderPtr)gc_table[k];
     gc_table[k] = ((size_t **)p);
     gc_table_count += 1;
     gc_table_bytes += _gc_get_size(p);
@@ -310,7 +324,7 @@ static inline size_t ** _gc_table_get(char * p)
     size_t k = GC_TABLE_HASH((size_t)p);
     size_t ** next = gc_table[k];
     while (next && next != (size_t **)p)
-        next = GcAllocHeaderPtr(next-GCOFFS_W)->next;
+        next = (size_t **)GcAllocHeaderPtr(next-GCOFFS_W)->next;
     return next;
 }
 
@@ -362,7 +376,7 @@ static inline void _gc_apply_cmds(_GcCmdlist * gc_cmd_arg)
 }
 
 // called by main thread
-static void _gc_safepoint_impl_os();
+static void _gc_safepoint_setup_os();
 static inline void _gc_safepoint_impl_lock();
 static __attribute__((noinline)) void _gc_safepoint_impl()
 {
@@ -373,7 +387,7 @@ static __attribute__((noinline)) void _gc_safepoint_impl()
     */
     //printf("before safepoint (threads: %d)\n", _thread_count.load());
     // gc should lock and unlock here
-    _gc_safepoint_impl_os();
+    _gc_safepoint_setup_os();
     _gc_safepoint_impl_lock();
     //printf("after safepoint (threads: %d)\n", _thread_count.load());
     /*
@@ -403,6 +417,7 @@ static inline void gc_safepoint(size_t inc)
         n = 0;
         
         //retry:
+        //puts("into safepoint:");
         _gc_safepoint_impl();
     }
 }
@@ -550,6 +565,7 @@ struct GcThreadRegInfo
 
 static inline void _gc_safepoint_long_start()
 {
+    _gc_safepoint_setup_os();
     fence();
     _thread_info->baton.fetch_add(5);
     _thread_info->mtx.unlock();
@@ -769,15 +785,15 @@ static inline void sweeper(
             auto color = _gc_get_color(c);
             if (color != GC_WHITE && color != GC_RED)
                 prev = next;
-            next = GcAllocHeaderPtr(c-GCOFFS)->next;
+            next = (size_t **)GcAllocHeaderPtr(c-GCOFFS)->next;
             if (color == GC_WHITE || color == GC_RED)
             {
-                if (prev) GcAllocHeaderPtr(prev-GCOFFS_W)->next = (size_t **)next;
+                if (prev) GcAllocHeaderPtr(prev-GCOFFS_W)->next = (GcAllocHeaderPtr)next;
                 else gc_table[k] = next;
                 
                 size_2 += _gc_get_size(c);
                 
-                auto s = _gc_get_size(c);
+                //auto s = _gc_get_size(c);
                 
                 #ifndef GC_NO_PREFIX
                 //memset((void *)c-GCOFFS, 0xA5, s+GCOFFS);
@@ -982,7 +998,7 @@ static inline unsigned long int _gc_loop(void *)
             
             //printf("INFO: thread %zd at RIP %zX RSP %zX (ctx ptr %p)\n",
             //    top->alt_id, _gc_context_get_rip((Context *)top->context),
-            //    _gc_context_get_rsp((Context *)top->context), top->context);
+            //    _gc_context_get_rsp((Context *)top->context), (void *)top->context);
             
             size_t * stack_top = (size_t *)top->stack_hi;
             //printf("%zu: %zX %zX %zX\n", top->alt_id, top->stack_lo, (size_t)stack, top->stack_hi);
@@ -1105,7 +1121,7 @@ static inline unsigned long int _gc_loop(void *)
         std::atomic_size_t size = 0;
         
         fence();
-        if (GC_TABLE_BITS >= 16)
+        if (0)//GC_TABLE_BITS >= 16)
         {
             std::vector<std::thread> threads;
             for (size_t i = 0; i < 8; i++)
@@ -1161,7 +1177,7 @@ static inline unsigned long int _gc_loop(void *)
                 while (next)
                 {
                     _gc_table_push((char *)next);
-                    next = GcAllocHeaderPtr(next-GCOFFS_W)->next;
+                    next = (size_t **)GcAllocHeaderPtr(next-GCOFFS_W)->next;
                 }
             }
             

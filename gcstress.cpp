@@ -1,134 +1,174 @@
-#include <thread>
-#include <vector>
-#include <atomic>
-#include <mutex>
-#include <stdio.h>
-#include <assert.h>
-#include <stdlib.h>
-using namespace std;
-
 // custom malloc
-//#define WALLOC_SYS_MALLOC
-//#define WALLOC_GLOBAL_FREELIST
-#define WALLOC_PULL_OVERRIDE (256*64)
-#define WALLOC_FLUSH_OVERRIDE (4096*32)
-#define WALLOC_FLUSH_KEEP_OVERRIDE 0
-#define WALLOC_MAXIMUM_FAST
 //#define WALLOC_CACHEHINT 64
+/*
 #include "wmalloc.hpp"
 #define malloc _walloc_raw_malloc
 #define calloc _walloc_raw_calloc
 #define realloc _walloc_raw_realloc
 #define free _walloc_raw_free
+*/
+
+#include <thread>
+#include <vector>
+#include <atomic>
+#include <stdio.h>
+#include <assert.h>
+#include <stdlib.h>
+using namespace std;
 
 // mimalloc
 //#include <mimalloc.h>
-//#define malloc mi_malloc
-//#define free mi_free
+
+//#define GC_NO_PREFIX
+//#define GC_SYSTEM_MALLOC
+//#define GC_SYSTEM_MALLOC_PREFIX(X) mi_ ## X
+#include "gc.hpp"
+void * X_malloc(size_t n)
+{
+    auto r = gc_malloc(n);
+    gc_set_trace_none(r);
+    return r;
+}
+#undef malloc
+#undef calloc
+#undef free
+
+#define malloc(X) gc_malloc((X))
+//#define malloc(X) X_malloc((X))
+#define free(X) gc_free((X))
+#define realloc(X, Y) gc_realloc((X), (Y))
+#define calloc(X, Y) gc_malloc((X)*(Y))
 
 // glibc
 //__attribute__((optnone)) void * _malloc(size_t n) { return malloc(n); }
 //#define malloc _malloc
 
-std::mutex global_tofree_list_mtx;
-std::vector<void *> global_tofree_list;
+std::atomic_int tc = 0;
 
-std::atomic_int mustexit;
-void freeloop()
+typedef size_t alloc_type;
+
+//alloc_type * ptrs[512][8];
+alloc_type *** ptrs;
+
+void dumpall(size_t i)
 {
-    //int i = 0;
-    while (!mustexit)
-    {
-        //printf("%d\n", i++);
-        global_tofree_list_mtx.lock();
-        /*
-        if (global_tofree_list.size())
-            printf("%zd\n", global_tofree_list.size());
-        */
-        for (auto & p : global_tofree_list)
-            free(p);
-        global_tofree_list.clear();
-        /*
-        while (global_tofree_list.size())
-        {
-            free(global_tofree_list.back());
-            global_tofree_list.pop_back();
-        }
-        */
-        global_tofree_list_mtx.unlock();
-        //_walloc_flush_freelists();
-    }
+    printf("thread %zd:\n", i);
+    for (size_t j = 0; j < 8; j++)
+        printf("alloc %zd: %p\n", j, (void *)ptrs[i][j]);
+    puts("----");
 }
 
-std::atomic_int tc = 0;
-int * ptrs[512][8];
+const size_t factor = 1024;
+
+std::mutex badlock;
+
 void looper()
 {
-    std::vector<void *> tofree_list;
-    auto do_free = [&](void * p)
-    {
-        tofree_list.push_back(p);
-        if (tofree_list.size() > 100)
-        {
-            global_tofree_list_mtx.lock();
-            for (auto & p : tofree_list)
-                global_tofree_list.push_back(p);
-            global_tofree_list_mtx.unlock();
-            tofree_list.clear();
-        }
-    };
-    int unique = tc.fetch_add(1);
-    for (int i = 0; i < 1000000; ++i)
+    gc_add_current_thread();
+    
+    int shlamnt = 32;
+    
+    size_t unique = tc.fetch_add(1);
+    for (int i = 0; i < 100000; ++i)
     {
         size_t s = 1ULL << (i%20);
+        
+            badlock.lock();
         for (int j = 0; j < 8; j++)
         {
-            ptrs[unique][j] = (int *)(malloc(s*sizeof(int)));
-            *ptrs[unique][j] = j+unique*1523;
+            badlock.unlock();
+            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)*s));
+            *ptrs[unique][j] = j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt);
+            badlock.lock();
         }
+            badlock.unlock();
         for (int j = 8; j > 0; j--)
         {
-            if (*ptrs[unique][j-1] != j-1+unique*1523)
+            auto val = *ptrs[unique][j-1];
+            if (val != j-1+unique*factor + (size_t(ptrs[unique][j-1])<<shlamnt))
+            {
+                badlock.lock();
+                size_t other_unique = (val)/factor;
+                size_t other_j = (val) % factor;
+                alloc_type * evidence = std::atomic_ref(ptrs[other_unique][other_j]).load();
+                printf("%p\n", (void *)evidence);
+                printf("%p\n", (void *)ptrs[unique][j-1]);
+                printf("(%zd %d) %016zX %016zX\n", unique, j, val, j-1+unique*factor + (size_t(ptrs[unique][j-1])<<shlamnt));
+                printf("(%zd %d) %016zu %016zu\n", unique, j, val, j-1+unique*factor + (size_t(ptrs[unique][j-1])<<shlamnt));
+                printf("%zd\n", other_j);
+                dumpall(other_unique);
+                dumpall(unique);
+                badlock.unlock();
                 assert(((void)"memory corruption! (FILO)", 0));
-            do_free(ptrs[unique][j-1]);
+            }
+            free(ptrs[unique][j-1]);
         }
+        
+        for (size_t i = 0; i < 20000; i++)
+            std::this_thread::yield();
+        
+        badlock.lock();
+        for (int j = 0; j < 8; j++)
+        {
+            badlock.unlock();
+            ptrs[unique][j] = (alloc_type *)(malloc(sizeof(alloc_type)*s));
+            *ptrs[unique][j] = j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt);
+            badlock.lock();
+        }
+        badlock.unlock();
         
         for (int j = 0; j < 8; j++)
         {
-            ptrs[unique][j] = (int *)(malloc(s*sizeof(int)));
-            *ptrs[unique][j] = j+unique*1523;
-        }
-        for (int j = 0; j < 8; j++)
-        {
-            if (*ptrs[unique][j] != j+unique*1523)
+            auto val = *ptrs[unique][j];
+            if (val != j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt))
+            {
+                badlock.lock();
+                size_t other_unique = (val)/factor;
+                size_t other_j = (val) % factor;
+                alloc_type * evidence = std::atomic_ref(ptrs[other_unique][other_j]).load();
+                printf("%p\n", (void *)evidence);
+                printf("%p\n", (void *)ptrs[unique][j]);
+                printf("(%zd %d) %016zu %016zX\n", unique, j, val, j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt));
+                printf("(%zd %d) %016zu %016zu\n", unique, j, val, j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt));
+                printf("%zd\n", other_j);
+                dumpall(other_unique);
+                dumpall(unique);
+                badlock.unlock();
                 assert(((void)"memory corruption! (FIFO)", 0));
-            do_free(ptrs[unique][j]);
+            }
+            free(ptrs[unique][j]);
         }
+        
+        for (size_t i = 0; i < 20000; i++)
+            std::this_thread::yield();
     }
     //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
-    //printf("!!!! thread %zd finished !!!!\n", _thread_info->alt_id);
+    printf("!!!! thread %zd (id %zd) finished !!!!\n", _thread_info->alt_id, unique);
     fflush(stdout);
 }
 
 int main()
 {
-    int threadcount = 32;
+    gc_add_current_thread();
+    
+    unsigned int threadcount = 32;
+    ptrs = (alloc_type ***)malloc(sizeof(alloc_type **) * threadcount);
+    for (size_t i = 0; i < threadcount; i++)
+    {
+        ptrs[i] = (alloc_type **)malloc(sizeof(alloc_type *) * 8);
+    }
     vector<thread> threads;
     
-    for (int i = 0; i < threadcount; ++i)
+    for (size_t i = 0; i < threadcount; ++i)
         threads.emplace_back(looper);
-    
-    std::thread freeloop_thread(freeloop);
     
     for (auto & thread : threads)
     {
+        _gc_safepoint_long_start();
         thread.join();
+        _gc_safepoint_long_end();
     }
     
-    mustexit.store(1);
-    freeloop_thread.join();
-    
     puts("Done!");
-    
     return 0;
 }
