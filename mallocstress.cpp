@@ -7,51 +7,87 @@ using namespace std::chrono_literals;
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
+
+#include <malloc.h>
 using namespace std;
 
-// mimalloc
-#include <mimalloc.h>
-#define malloc mi_malloc
-#define free mi_free
+// custom malloc
+//#define WALLOC_SYS_MALLOC
+//#define WALLOC_GLOBAL_FREELIST
+#define WALLOC_PULL_OVERRIDE (256*128)
+#define WALLOC_FLUSH_OVERRIDE (4096*64)
+#define WALLOC_FLUSH_KEEP_OVERRIDE 0
+#define WALLOC_MAXIMUM_FAST
+//#define WALLOC_CACHEHINT 64
+#include "wmalloc.hpp"
+#define malloc _walloc_raw_malloc
+#define calloc _walloc_raw_calloc
+#define realloc _walloc_raw_realloc
+#define free _walloc_raw_free
 
 // glibc
 //__attribute__((optnone)) void * _malloc(size_t n) { return malloc(n); }
 //#define malloc _malloc
 
-std::mutex global_tofree_list_mtx;
+struct FairMutex {
+private:
+    std::atomic<size_t> next_ticket{0};   // The next ticket to be issued
+    std::atomic<size_t> serving_ticket{0}; // The ticket number being served
+
+public:
+    void lock() {
+        size_t my_ticket = next_ticket.fetch_add(1, std::memory_order_relaxed); // Get a ticket
+        while (serving_ticket.load(std::memory_order_acquire) != my_ticket) {
+            std::this_thread::yield(); // Wait until our ticket is served
+        }
+    }
+
+    void unlock() {
+        serving_ticket.fetch_add(1, std::memory_order_release); // Serve next ticket
+    }
+};
+
+FairMutex global_tofree_list_mtx;
 std::vector<void *> global_tofree_list;
 
 std::atomic_int mustexit;
 void freeloop()
 {
-    //int i = 0;
+    size_t max_list_bytes = 0;
+    size_t max_list_size = 0;
     while (1)
     {
-        //printf("%d\n", i++);
+        size_t s = 0;
+        size_t list_bytes = 0;
+        
         global_tofree_list_mtx.lock();
-        /*
-        if (global_tofree_list.size())
-            printf("%zd\n", global_tofree_list.size());
-        */
+        
+        s = global_tofree_list.size();
         for (auto & p : global_tofree_list)
+        {
+            list_bytes += (WAllocHeaderPtr(((char*)p)-WALLOC_OFFS)->size)<<8>>8;
             free(p);
+        }
         global_tofree_list.clear();
         
-        if (mustexit)
-        {
-            global_tofree_list_mtx.unlock();
-            return;
-        }
-        
-        /*
-        while (global_tofree_list.size())
-        {
-            free(global_tofree_list.back());
-            global_tofree_list.pop_back();
-        }
-        */
         global_tofree_list_mtx.unlock();
-        //_walloc_flush_freelists();
+
+        if (s > max_list_size)
+        {
+            printf("new size %zd\n", s);
+            max_list_size = s;
+            fflush(stdout);
+        }
+        if (list_bytes > max_list_bytes)
+        {
+            if (s)
+                printf("%zd\n", list_bytes);
+            max_list_bytes = list_bytes;
+            fflush(stdout);
+        }
+
+        if (mustexit)
+            return;
     }
 }
 
@@ -73,7 +109,7 @@ void looper()
         }
     };
     int unique = tc.fetch_add(1);
-    for (int i = 0; i < 100000; ++i)
+    for (int i = 0; i < 1000000; ++i)
     {
         size_t s = 1ULL << (i%20);
         for (int j = 0; j < 8; j++)
@@ -85,7 +121,7 @@ void looper()
         {
             if (*ptrs[unique][j-1] != j-1+unique*10000)
                 assert(((void)"memory corruption! (FILO)", 0));
-            do_free(ptrs[unique][j-1]);
+            free(ptrs[unique][j-1]);
         }
         
         for (int j = 0; j < 8; j++)
@@ -97,7 +133,7 @@ void looper()
         {
             if (*ptrs[unique][j] != j+unique*10000)
                 assert(((void)"memory corruption! (FIFO)", 0));
-            do_free(ptrs[unique][j]);
+            free(ptrs[unique][j]);
         }
     }
     global_tofree_list_mtx.lock();
@@ -105,8 +141,6 @@ void looper()
         global_tofree_list.push_back(p);
     global_tofree_list_mtx.unlock();
     tofree_list.clear();
-    puts("thread done!");
-    std::this_thread::sleep_for(10000ms);
     //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
     //printf("!!!! thread %zd finished !!!!\n", _thread_info->alt_id);
     fflush(stdout);
@@ -114,7 +148,7 @@ void looper()
 
 int main()
 {
-    int threadcount = 32;
+    int threadcount = 1;
     vector<thread> threads;
     
     for (int i = 0; i < threadcount; ++i)

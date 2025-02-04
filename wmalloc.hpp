@@ -18,8 +18,8 @@ struct WAllocHeader
 };
 #endif
 
-//#define dbgassert(X) assert(X)
-#define dbgassert(X) (void)(X)
+#define dbgassert(X) assert(X)
+//#define dbgassert(X) (void)(X)
 
 typedef WAllocHeader * WAllocHeaderPtr;
 
@@ -110,6 +110,8 @@ struct WAllocFreeList {
     {
         for (size_t i = 0; i < 64; i++)
             dbgassert(!_walloc_heap_free_backs_tls[i]);
+        for (size_t i = 0; i < 64; i++)
+            dbgassert(!list[i]);
     }
     WAllocHeaderPtr list[64] = {};
     WAllocHeaderPtr & operator[](size_t n) { return list[n]; }
@@ -133,15 +135,24 @@ static inline void _walloc_flush_freelists()
 {
     #ifndef WALLOC_GLOBAL_FREELIST
     
+    //puts("flush...");
+    
     for (size_t bin = 0; bin < 64; bin++)
     {
+        _walloc_free_mtx.lock();
+        
         auto last = _walloc_heap_free_backs_tls[bin];
-        if (!last) continue;
+        if (!last)
+        {
+            _walloc_free_mtx.unlock();
+            continue;
+        }
         
         auto top = _walloc_heap_free_tls[bin];
         auto cap = _walloc_heap_free_cap_tls[bin];
-        
-        _walloc_free_mtx.lock();
+        //printf("%d\n", bin);
+        assert(cap);
+        assert(top);
         
         last->next = _walloc_heap_free[bin].exchange(top, std::memory_order_acq_rel);
         _walloc_heap_free_cap[bin].fetch_add(cap, std::memory_order_acq_rel);
@@ -273,6 +284,7 @@ extern "C" void * _walloc_raw_malloc(size_t n)
             _walloc_rawmal_inner_pages(&p2, &s);
             _walloc_recommit(p2, s);
             
+            memset(p, 0, WALLOC_OFFS);
             #ifndef WALLOC_NOZERO
             memset(p, 0, n + WALLOC_OFFS);
             #endif
@@ -284,6 +296,8 @@ extern "C" void * _walloc_raw_malloc(size_t n)
     }
     
     #else
+    
+    assert(bin != 0);
     
     if (!_walloc_heap_free_tls[bin])
     {
@@ -342,6 +356,8 @@ extern "C" void * _walloc_raw_malloc(size_t n)
             }
         }
     }
+    else
+        dbgassert(_walloc_heap_free_backs_tls[bin]);
     
     if (_walloc_heap_free_tls[bin])
     {
@@ -366,7 +382,10 @@ extern "C" void * _walloc_raw_malloc(size_t n)
             _walloc_rawmal_inner_pages(&p2, &s);
             _walloc_recommit(p2, s);
             
-            assert(!std::atomic_ref(*(size_t *)&WAllocHeaderPtr(p)->size).load()); // double allocation
+            size_t nbad = std::atomic_ref(WAllocHeaderPtr(p)->size).load();
+            dbgassert(!nbad); // double allocation
+            
+            memset(p, 0, WALLOC_OFFS);
             
             #ifndef WALLOC_NOZERO
             memset(p, 0, n + WALLOC_OFFS);
@@ -395,7 +414,6 @@ extern "C" void * _walloc_raw_malloc(size_t n)
     if (_malloc_commit_needed())
     {
         char * top = _walloc_heap_top.load(std::memory_order_acquire);
-        
         ptrdiff_t over = p + n2 - top;
         if (over > 0)
         {
@@ -412,8 +430,11 @@ extern "C" void * _walloc_raw_malloc(size_t n)
         }
     }
     
-    WAllocHeaderPtr(p)->size = n;
+    memset(p, 0, WALLOC_OFFS);
+    
     WAllocHeaderPtr(p)->next = 0;
+    WAllocHeaderPtr(p)->size = n;
+    dbgassert(WAllocHeaderPtr(p)->size);
     
     //std::atomic_thread_fence(std::memory_order_seq_cst);
     
@@ -466,19 +487,17 @@ extern "C" void _walloc_raw_free(void * _p)
     if (!_p) return;
     char * p = ((char *)_p)-WALLOC_OFFS;
     
-    //if (!WAllocHeaderPtr(p)->size) return; // double free
-    
-    dbgassert(std::atomic_ref(*(size_t *)&WAllocHeaderPtr(p)->size).load()); // double free
-    
     size_t n = WAllocHeaderPtr(p)->size;
     size_t _n = n; // for viewing with debuggers
     (void) _n;
     
-    assert(std::atomic_ref(*(size_t *)&WAllocHeaderPtr(p)->size).load()); // double free
-    WAllocHeaderPtr(p)->size = 0;
+    dbgassert(n); // double free
+    
+    std::atomic_ref(WAllocHeaderPtr(p)->size).store(0);
     // the user is allowed to store 8 bits of info inside of the `size` field of the allocation header
     n <<= 8;
     n >>= 8;
+    
     //n = std::bit_ceil(n);
     n = 1ULL << (64-__builtin_clzll(n-1));
     
@@ -502,6 +521,8 @@ extern "C" void _walloc_raw_free(void * _p)
     
     #else
     
+    assert(bin != 0);
+    
     gp->next = _walloc_heap_free_tls[bin];
     _walloc_heap_free_tls[bin] = gp;
     if (!_walloc_heap_free_backs_tls[bin])
@@ -520,6 +541,8 @@ extern "C" void _walloc_raw_free(void * _p)
             last = _walloc_heap_free_backs_tls[bin];
             consumed = _walloc_heap_free_cap_tls[bin];
             _walloc_heap_free_cap_tls[bin] = 0;
+            _walloc_heap_free_backs_tls[bin] = 0;
+            assert(!last->next);
         }
         else
         {
@@ -554,6 +577,9 @@ extern "C" void _walloc_raw_free(void * _p)
         }
         
         _walloc_free_mtx.unlock();
+        
+        if (_walloc_tls_to_shared_cap_keep == 0)
+            assert(!_walloc_heap_free_tls[bin]);
         
         if (!_walloc_heap_free_tls[bin])
             _walloc_heap_free_backs_tls[bin] = 0;
@@ -605,7 +631,10 @@ static inline bool _malloc_commit_needed()
 }
 static inline void _walloc_commit(char * loc, size_t over)
 {
+    std::atomic<char *> last_end = 0;
+    assert(loc + over >= last_end.load());
     assert(VirtualAlloc(loc, over, MEM_COMMIT, PAGE_READWRITE));
+    last_end.store(loc + over);
 }
 static inline void _walloc_recommit(char * p2, size_t s)
 {

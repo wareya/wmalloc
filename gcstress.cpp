@@ -22,6 +22,7 @@ using namespace std;
 //#define GC_NO_PREFIX
 //#define GC_SYSTEM_MALLOC
 //#define GC_SYSTEM_MALLOC_PREFIX(X) mi_ ## X
+#define WALLOC_NOZERO
 #include "gc.hpp"
 void * X_malloc(size_t n)
 {
@@ -33,8 +34,8 @@ void * X_malloc(size_t n)
 #undef calloc
 #undef free
 
-#define malloc(X) gc_malloc((X))
-//#define malloc(X) X_malloc((X))
+//#define malloc(X) gc_malloc((X))
+#define malloc(X) X_malloc((X))
 #define free(X) gc_free((X))
 #define realloc(X, Y) gc_realloc((X), (Y))
 #define calloc(X, Y) gc_malloc((X)*(Y))
@@ -62,7 +63,9 @@ const size_t factor = 1024;
 
 std::mutex badlock;
 
-unsigned int threadcount = 32;
+uint32_t threadcount = 32;
+
+std::atomic_uint32_t threads_done = 0;
 
 void looper()
 {
@@ -76,9 +79,10 @@ void looper()
     local_ptrs = ptrs[unique];
     (void)local_ptrs;
     
-    for (int i = 0; i < 100000; ++i)
+    for (int i = 0; i < 10000; ++i)
     {
         size_t s = 1ULL << (i%20);
+        //size_t s = 1ULL << 12;
         
         for (int j = 0; j < 8; j++)
         {
@@ -157,7 +161,7 @@ void looper()
                 alloc_type * evidence = std::atomic_ref(ptrs[other_unique][other_j]).load();
                 printf("%p\n", (void *)evidence);
                 printf("%p\n", (void *)ptrs[unique][j]);
-                printf("(%zd %d) %016zu %016zX\n", unique, j, val, j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt));
+                printf("(%zd %d) %016zX %016zX\n", unique, j, val, j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt));
                 printf("(%zd %d) %016zu %016zu\n", unique, j, val, j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt));
                 printf("%zd %zd\n", other_unique, other_j);
                 dumpall(other_unique);
@@ -171,21 +175,28 @@ void looper()
     //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
     printf("!!!! thread %zd (id %zd) finished !!!!\n", _thread_info->alt_id, unique);
     fflush(stdout);
+    threads_done.fetch_add(1);
 }
 
 int main()
 {
     gc_add_current_thread();
     
-    ptrs = (alloc_type ***)malloc(sizeof(alloc_type **) * threadcount);
+    ptrs = (alloc_type ***)gc_malloc(sizeof(alloc_type **) * threadcount);
     for (size_t i = 0; i < threadcount; i++)
     {
-        ptrs[i] = (alloc_type **)malloc(sizeof(alloc_type *) * 8);
+        ptrs[i] = (alloc_type **)gc_malloc(sizeof(alloc_type *) * 8);
     }
     vector<thread> threads;
     
     for (size_t i = 0; i < threadcount; ++i)
         threads.emplace_back(looper);
+    
+    while (threads_done.load() < threadcount)
+    {
+        gc_safepoint(0);
+        std::this_thread::yield();
+    }
     
     for (auto & thread : threads)
     {

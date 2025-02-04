@@ -72,10 +72,12 @@ struct WAllocHeader
 typedef WAllocHeader GcAllocHeader;
 typedef WAllocHeader * GcAllocHeaderPtr;
 //#define WALLOC_PULL_OVERRIDE 256
-#define WALLOC_FLUSH_OVERRIDE 10000000000
+//#define WALLOC_FLUSH_OVERRIDE 10000000000
 //#define WALLOC_FLUSH_KEEP_OVERRIDE 0
 //#define WALLOC_CACHEHINT 64
-#define WALLOC_FASTISH
+#define WALLOC_FAST_SAFE
+//#define WALLOC_NOZERO
+//#define WALLOC_MAXIMUM_FAST
 #include "wmalloc.hpp"
 
 #if (!defined(_WIN32)) && defined(GC_USE_LAZY_SPINLOCK)
@@ -907,12 +909,13 @@ static inline unsigned long int _gc_loop(void *)
                 //puts("buried!");
             }
         }
+        
+        // lock hashtable in advance so rogue threads that started up after we locked _thread_info_mutex aren't trouble
+        _gc_table_mutex.lock();
+        
         //puts("ending suspension");
         fence();
         if (_gc_debug_spew) puts("!d");
-        if (_gc_debug_spew) fflush(stdout);
-        _gc_threads_must_wait_for_gc.store(0);
-        if (_gc_debug_spew) puts("!e");
         if (_gc_debug_spew) fflush(stdout);
         //puts("a3");
         
@@ -1068,7 +1071,7 @@ static inline unsigned long int _gc_loop(void *)
                     v_ = f(ptr, v_, i++, userdata);
                 }
             }
-            else
+            else if ((size_t)(void *)base->tracefn != (size_t)-1)
                 _gc_scan(start, end, &rootlist);
             
             _gc_set_color(ptr, GC_BLACK);
@@ -1088,8 +1091,6 @@ static inline unsigned long int _gc_loop(void *)
             top = top->next;
         }
         
-        _thread_info_mutex.unlock();
-        
         fence();
         
         if (_gc_stop.load()) break;
@@ -1104,12 +1105,14 @@ static inline unsigned long int _gc_loop(void *)
         ///// sweep phase
         /////
         
-        _gc_table_mutex.lock();
+        fence();
+        
+        _thread_info_mutex.unlock();
+        
+        _gc_threads_must_wait_for_gc.store(0);
         
         if (_gc_debug_spew) puts("!l");
         if (_gc_debug_spew) fflush(stdout);
-        
-        fence();
         
         //if (!silent) printf("number of found allocations: %zd over %zd words\n", n, _gc_scan_word_count);
         if (!silent) printf("number of found allocations: %zd over %zd words\n", n, _gc_scan_word_count);
@@ -1121,21 +1124,27 @@ static inline unsigned long int _gc_loop(void *)
         std::atomic_size_t size = 0;
         
         fence();
-        if (0)//GC_TABLE_BITS >= 16)
+        
+        //puts("starting sweep...");
+        
+        if (GC_TABLE_BITS >= 16)
         {
             std::vector<std::thread> threads;
-            for (size_t i = 0; i < 8; i++)
+            const size_t threadcount = 1;
+            for (size_t i = 0; i < threadcount; i++)
             {
-                size_t start = GC_TABLE_SIZE * i / 8;
-                size_t end = GC_TABLE_SIZE * (i+1) / 8;
+                size_t start = GC_TABLE_SIZE * i / threadcount;
+                size_t end = GC_TABLE_SIZE * (i+1) / threadcount;
                 threads.emplace_back(sweeper, &filled_num, &size, &n3, start, end);
                 threads_made += 1;
             }
-            for (size_t i = 0; i < 8; i++)
+            for (size_t i = 0; i < threadcount; i++)
                 threads[i].join();
         }
         else
             sweeper(&filled_num, &size, &n3, 0, GC_TABLE_SIZE);
+        
+        //puts("done");
         
         fence();
         
