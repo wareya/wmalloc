@@ -77,7 +77,7 @@ static inline void _gc_get_data_sections()
         
         // Iterate over memory regions in this module
         MEMORY_BASIC_INFORMATION memInfo;
-        unsigned char* address = static_cast<unsigned char*>(moduleInfo.lpBaseOfDll);
+        unsigned char * address = static_cast<unsigned char*>(moduleInfo.lpBaseOfDll);
         while (address < (static_cast<unsigned char*>(moduleInfo.lpBaseOfDll) + moduleInfo.SizeOfImage))
         {
             if (VirtualQuery(address, &memInfo, sizeof(memInfo)))
@@ -144,13 +144,13 @@ extern "C" int gc_end()
     puts("waiting for GC thread to stop...");
     auto r = WaitForSingleObject((HANDLE)_gc_thread, INFINITE);
     printf("??? %ld\n", r);
-    fence();
+    _gc_fence();
     CloseHandle((HANDLE)_gc_thread);
     _gc_thread = 0;
     
-    fence();
+    _gc_fence();
     _gc_stop = 0;
-    fence();
+    _gc_fence();
     
     printf("seconds wasted with GC thread blocking main thread: %.4f\n", wasted_seconds);
     printf("pause\tcmd\twhiten\troots\tmark\tsweep\thipause\thxtable_bits\n");
@@ -311,11 +311,11 @@ static inline void * _gc_loop_wrapper(void * x)
     _gc_loop(x);
     puts("exiting...");
     fflush(stdout);
-    fence();
+    _gc_fence();
     pthread_exit(0);
     puts("exiting?");
     fflush(stdout);
-    fence();
+    _gc_fence();
     return 0;
 }
 
@@ -342,13 +342,13 @@ extern "C" int gc_end()
     
     puts("trying to join");
     pthread_join(_gc_thread, 0);
-    fence();
+    _gc_fence();
     _gc_thread = 0;
     puts("got out");
     
-    fence();
+    _gc_fence();
     _gc_stop = 0;
-    fence();
+    _gc_fence();
     
     printf("seconds wasted with GC thread blocking main thread: %.4f\n", wasted_seconds);
     printf("pause\tcmd\twhiten\troots\tmark\tsweep\thipause\thxtable_bits\n");
