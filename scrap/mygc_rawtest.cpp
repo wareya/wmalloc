@@ -33,6 +33,8 @@ std::atomic_int tc = 0;
 int * ptrs[512][8];
 void * looper()
 {
+    gc_add_current_thread();
+    
     int unique = tc.fetch_add(1);
     for (int i = 0; i < 1000000; ++i)
     {

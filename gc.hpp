@@ -24,7 +24,7 @@ extern "C" void * gc_realloc(void * _p, size_t n);
 extern "C" int gc_start();
 extern "C" int gc_end();
 
-// If provided, called during tracing. Return the address containing a GC-owned pointer.
+// If provided by gc_set_trace_func, called during tracing. Return the address containing a GC-owned pointer.
 // Dereferencing the returned pointer must result in a memory cell containing a GC-owned pointer.
 // For the first call, "current" is 0. Each next call has "current" be the last-returned value.
 // i is a counter starting at 0 and increasing by 1 for each consecutive call to the given trace function.
@@ -35,6 +35,9 @@ extern "C" int gc_end();
 // Returning addresses that do not point at GC-owned pointers will result in undefined behavior.
 // The function must not have any side effects on GC-accessible data, must not lock any mutexes, must not allocate memory, etc.
 typedef void **(*GcTraceFunc)(void * alloc, void ** current, size_t i, size_t userdata);
+
+// Attaches a trace function to an allocation. Without one, every machine-word-sized chunk in the allocation is
+// checked for being a pointer.
 static inline void gc_set_trace_func(void * alloc, GcTraceFunc fn, size_t userdata);
 
 // Do not trace inside of the given allocation.
@@ -580,11 +583,15 @@ static inline void _gc_safepoint_long_end()
 }
 static inline void _gc_safepoint_impl_lock()
 {
-    auto id = _thread_info->alt_id;
     fence();
-    //assert(_thread_info);
-    if (!_thread_info)
-        return;
+    assert(_thread_info);
+    //if (!_thread_info)
+    //    return;
+    
+    GcThreadRegInfo * _thread_info_2 = _thread_info;
+    
+    auto id = _thread_info->alt_id;
+    
     if (_gc_debug_spew) printf("thread %zd unlocking\n", id);
     _thread_info->baton.store(0);
     
@@ -641,8 +648,10 @@ static inline void gc_add_current_thread()
             info->stack_lo = _gc_get_stack_lo();
             info->id = std::this_thread::get_id();
             info->alt_id = _gc_thread_id_acquire();
+            
             //printf("stack top for %zd is %zX\n", info->alt_id, info->stack_hi);
             //printf("thread id: %zu (main: %zu)\n", info->alt_id, _main_thread);
+            
             info->gc_cmd = &gc_cmd;
             
             _thread_info = info;
@@ -1185,8 +1194,10 @@ static inline unsigned long int _gc_loop(void *)
                 size_t ** next = old_table[k];
                 while (next)
                 {
+                    auto next2 = (size_t **)GcAllocHeaderPtr(next-GCOFFS_W)->next;
+                    GcAllocHeaderPtr(next-GCOFFS_W)->next = 0;
                     _gc_table_push((char *)next);
-                    next = (size_t **)GcAllocHeaderPtr(next-GCOFFS_W)->next;
+                    next = next2;
                 }
             }
             
