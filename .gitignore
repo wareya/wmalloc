@@ -1,0 +1,4 @@
+libgc/
+benchmarks/
+*.exe
+*.out
