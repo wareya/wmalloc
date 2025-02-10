@@ -4,6 +4,8 @@ Threadsafe malloc/free/calloc/realloc implementation using raw OS primitives on 
 
 Include only in a single compilation unit, and re-export wrapper functions from there if your project has more than one compilation unit. (The relevant functions are marked as `extern "C"`, so you can do this to use it from a C-only codebase, too.)
 
+This branch includes a bdwgc-style conservative GC (with a different API), which is also small and header-only.
+
 Features:
 
 - Small implementation size
