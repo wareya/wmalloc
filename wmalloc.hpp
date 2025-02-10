@@ -208,8 +208,9 @@ static inline void _walloc_commit(char * p, size_t n);
 static inline void _walloc_decommit(char * p, size_t n);
 static inline void _walloc_recommit(char * p, size_t n);
 static inline bool _malloc_commit_needed();
-extern "C" void * _walloc_raw_malloc(size_t n);
-extern "C" void * _walloc_raw_calloc(size_t c, size_t n);
+extern "C" __attribute__((__malloc__)) void * _walloc_raw_malloc(size_t n);
+extern "C" __attribute__((__malloc__)) void * _walloc_raw_calloc(size_t c, size_t n);
+extern "C" __attribute__((__malloc__)) void * _walloc_raw_realloc(void * p, size_t n);
 extern "C" void _walloc_raw_free(void * p);
 
 //size_t _walloc_shared_to_tls_cap = getenv("WALLOC_A") ? atoi(getenv("WALLOC_A")) : (256);
@@ -236,7 +237,7 @@ const size_t _walloc_tls_to_shared_cap_keep = 0;
 static std::atomic_ptrdiff_t total_alloc_ever_size = 0;
 static std::atomic_ptrdiff_t total_freed_ever_size = 0;
 
-extern "C" void * _walloc_raw_malloc(size_t n)
+extern "C" __attribute__((__malloc__)) void * _walloc_raw_malloc(size_t n)
 {
     size_t orig_n = n;
     (void)orig_n; // only used in some ifdef cases
@@ -441,7 +442,7 @@ extern "C" void * _walloc_raw_malloc(size_t n)
     return (void *)(p+WALLOC_OFFS);
     #endif
 }
-extern "C" void * _walloc_raw_calloc(size_t c, size_t n)
+extern "C" __attribute__((__malloc__)) void * _walloc_raw_calloc(size_t c, size_t n)
 {
     #ifdef WALLOC_SYS_MALLOC
     return calloc(c, n);
@@ -455,7 +456,7 @@ extern "C" void * _walloc_raw_calloc(size_t c, size_t n)
     return r;
     #endif
 }
-extern "C" void * _walloc_raw_realloc(void * p, size_t n)
+extern "C" __attribute__((__malloc__)) void * _walloc_raw_realloc(void * p, size_t n)
 {
     #ifdef WALLOC_SYS_MALLOC
     return realloc(p, n);
