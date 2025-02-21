@@ -62,6 +62,8 @@ void * looper()
             free(ptrs[unique][j]);
         }
     }
+    
+    gc_remove_current_thread();
     return 0;
 }
 

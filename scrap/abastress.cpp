@@ -117,6 +117,8 @@ void looper()
     //puts("!!!!!!!!!!!!!!! thread finished !!!!!!!!!!!!");
     printf("!!!! thread %zd (id %zd) finished !!!!\n", _thread_info->alt_id, unique);
     fflush(stdout);
+    
+    gc_remove_current_thread();
 }
 
 int main()

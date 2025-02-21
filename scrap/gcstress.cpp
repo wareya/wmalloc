@@ -19,7 +19,7 @@ using namespace std;
 // mimalloc
 //#include <mimalloc.h>
 
-//#define GC_NO_PREFIX
+#define GC_NO_PREFIX
 //#define GC_SYSTEM_MALLOC
 //#define GC_SYSTEM_MALLOC_PREFIX(X) mi_ ## X
 #define WALLOC_NOZERO
@@ -81,13 +81,14 @@ void looper()
     
     for (int i = 0; i < 10000; ++i)
     {
-        size_t s = 1ULL << (i%20);
+        //size_t s = 1ULL << (i%20);
+        size_t s = 1ULL << (i%12);
         //size_t s = 1ULL << 12;
         
         for (int j = 0; j < 8; j++)
         {
             std::atomic_ref(ptrs[unique][j]).store((alloc_type *)(malloc(sizeof(alloc_type)*s)));
-            fence();
+            _gc_fence();
             *ptrs[unique][j] = j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt);
         }
         
@@ -96,7 +97,7 @@ void looper()
             auto val = *ptrs[unique][j-1];
             if (val != j-1+unique*factor + (size_t(ptrs[unique][j-1])<<shlamnt))
             {
-                fence();
+                _gc_fence();
                 size_t other_unique = (val)/factor;
                 size_t other_j = (val) % factor;
                 
@@ -131,7 +132,7 @@ void looper()
         for (int j = 0; j < 8; j++)
         {
             std::atomic_ref(ptrs[unique][j]).store((alloc_type *)(malloc(sizeof(alloc_type)*s)));
-            fence();
+            _gc_fence();
             *ptrs[unique][j] = j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt);
         }
         
@@ -140,7 +141,7 @@ void looper()
             auto val = *ptrs[unique][j];
             if (val != j+unique*factor + (size_t(ptrs[unique][j])<<shlamnt))
             {
-                fence();
+                _gc_fence();
                 size_t other_unique = (val)/factor;
                 size_t other_j = (val) % factor;
                 
@@ -176,6 +177,8 @@ void looper()
     printf("!!!! thread %zd (id %zd) finished !!!!\n", _thread_info->alt_id, unique);
     fflush(stdout);
     threads_done.fetch_add(1);
+    
+    gc_remove_current_thread();
 }
 
 int main()

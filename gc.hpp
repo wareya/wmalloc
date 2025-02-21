@@ -66,8 +66,8 @@ static inline void gc_safepoint(size_t inc);
 // Must be called before and after doing anything that might take arbitrarily long, e.g. joining a thread, locking a mutex, etc.
 // If you have a deadlock during some operation, you probably need to call these around it.
 // While in a safepoint you cannot create or move any GC'd pointers on, into, or out of the safepointed thread.
-static inline void _gc_safepoint_long_start();
-static inline void _gc_safepoint_long_end();
+static void _gc_safepoint_long_start();
+static void _gc_safepoint_long_end();
 
 static inline void _gc_fence() { std::atomic_thread_fence(std::memory_order_seq_cst); }
 
@@ -601,105 +601,109 @@ static inline size_t _gc_get_stack_lo();
 static inline size_t _gc_thread_id_acquire();
 static inline void _gc_thread_id_release(size_t h);
 
+struct GcThreadRegistrationCanary
+{
+    bool initialized = false;
+    
+    void init()
+    {
+        if (initialized) return;
+        initialized = true;
+        
+        auto info = new(_malloc(sizeof(GcThreadRegInfo)))GcThreadRegInfo();
+        info->stack_hi = _gc_get_stack_hi();
+        info->stack_lo = _gc_get_stack_lo();
+        info->id = std::this_thread::get_id();
+        info->alt_id = _gc_thread_id_acquire();
+        //printf("stack top for %zd is %zX\n", info->alt_id, info->stack_hi);
+        //printf("thread id: %zu (main: %zu)\n", info->alt_id, _main_thread);
+        info->gc_cmd = &gc_cmd;
+        
+        _thread_info = info;
+        _thread_info->context = _gc_get_threadlocal_ctx();
+        _thread_info->baton.store(0);
+        _thread_info->dead.store(0);
+        _thread_info->mtx.lock();
+        
+        _thread_info_mutex.lock();
+        if (_gc_debug_spew) printf("adding %zd\n", info->alt_id);
+        _gc_fence();
+        if (_thread_info_list != 0)
+            _thread_info->next = _thread_info_list;
+        if (_thread_info->next)
+            _thread_info->next->prev = _thread_info;
+        _thread_info_list = _thread_info;
+        _thread_count.fetch_add(1);
+        
+        _gc_fence();
+        _thread_info_mutex.unlock();
+    }
+    void destruct()
+    {
+        if (!initialized) return;
+        
+        if (_gc_debug_spew) printf("trying to destruct thread %zd....\n", _thread_info->alt_id);
+        if (_gc_debug_spew) printf("destructing: %zd\n", gc_cmd.len);
+        
+        if (gc_cmd.len > 0)
+        {
+            _thread_info->gc_cmd = (_GcCmdlist *)_malloc(sizeof(_GcCmdlist));
+            *_thread_info->gc_cmd = gc_cmd;
+            gc_cmd = {};
+        }
+        
+        if (_gc_debug_spew) puts("x");
+        if (_gc_debug_spew) fflush(stdout);
+        _thread_info->baton.store(5);
+        
+        if (_gc_debug_spew) puts("y");
+        if (_gc_debug_spew) fflush(stdout);
+        //gc_safepoint(0);
+        if (_gc_debug_spew) puts("z");
+        if (_gc_debug_spew) fflush(stdout);
+        
+        _thread_info->dead.store(1);
+        
+        _gc_fence();
+        _thread_info->mtx.unlock();
+        
+        //puts("unlocked our mutex");
+        
+        if (_gc_debug_spew) printf("!!!! thread %zd destructed !!!!\n", _thread_info->alt_id);
+        
+        /*
+        _gc_fence();
+        if (_thread_info->next)
+            _thread_info->next->prev = _thread_info->prev;
+        if (_thread_info->prev)
+            _thread_info->prev->next = _thread_info->next;
+        else 
+            _thread_info_list = _thread_info->next;
+        _thread_count.fetch_sub(1);
+        _gc_fence();
+        
+        _thread_info_mutex.unlock();
+        
+        if (_gc_debug_spew) fflush(stdout);
+        
+        _thread_info->~GcThreadRegInfo();
+        _free(_thread_info);
+        */
+        
+        
+        initialized = false;
+    }
+};
+
+static thread_local GcThreadRegistrationCanary canary;
+
 static inline void gc_add_current_thread()
 {
-    struct GcThreadRegistrationCanary
-    {
-        bool initialized = false;
-        
-        void init()
-        {
-            if (initialized) return;
-            initialized = true;
-            
-            auto info = new(_malloc(sizeof(GcThreadRegInfo)))GcThreadRegInfo();
-            info->stack_hi = _gc_get_stack_hi();
-            info->stack_lo = _gc_get_stack_lo();
-            info->id = std::this_thread::get_id();
-            info->alt_id = _gc_thread_id_acquire();
-            //printf("stack top for %zd is %zX\n", info->alt_id, info->stack_hi);
-            //printf("thread id: %zu (main: %zu)\n", info->alt_id, _main_thread);
-            info->gc_cmd = &gc_cmd;
-            
-            _thread_info = info;
-            _thread_info->context = _gc_get_threadlocal_ctx();
-            _thread_info->baton.store(0);
-            _thread_info->dead.store(0);
-            _thread_info->mtx.lock();
-            
-            _thread_info_mutex.lock();
-            if (_gc_debug_spew) printf("adding %zd\n", info->alt_id);
-            _gc_fence();
-            if (_thread_info_list != 0)
-                _thread_info->next = _thread_info_list;
-            if (_thread_info->next)
-                _thread_info->next->prev = _thread_info;
-            _thread_info_list = _thread_info;
-            _thread_count.fetch_add(1);
-            
-            _gc_fence();
-            _thread_info_mutex.unlock();
-        }
-        
-        ~GcThreadRegistrationCanary()
-        {
-            if (!initialized) return;
-            
-            //printf("trying to destruct thread %zd....\n", _thread_info->alt_id);
-            //printf("destructing: %zd\n", gc_cmd.len);
-            
-            if (gc_cmd.len > 0)
-            {
-                _thread_info->gc_cmd = (_GcCmdlist *)_malloc(sizeof(_GcCmdlist));
-                *_thread_info->gc_cmd = gc_cmd;
-                gc_cmd = {};
-            }
-            
-            if (_gc_debug_spew) puts("x");
-            if (_gc_debug_spew) fflush(stdout);
-            _thread_info->baton.store(5);
-            
-            if (_gc_debug_spew) puts("y");
-            if (_gc_debug_spew) fflush(stdout);
-            //gc_safepoint(0);
-            if (_gc_debug_spew) puts("z");
-            if (_gc_debug_spew) fflush(stdout);
-            
-            _thread_info->dead.store(1);
-            
-            _gc_fence();
-            _thread_info->mtx.unlock();
-            
-            //puts("unlocked our mutex");
-            
-            //printf("!!!! thread %zd destructed !!!!\n", _thread_info->alt_id);
-            /*
-            _gc_fence();
-            if (_thread_info->next)
-                _thread_info->next->prev = _thread_info->prev;
-            if (_thread_info->prev)
-                _thread_info->prev->next = _thread_info->next;
-            else 
-                _thread_info_list = _thread_info->next;
-            _thread_count.fetch_sub(1);
-            _gc_fence();
-            
-            _thread_info_mutex.unlock();
-            
-            if (_gc_debug_spew) fflush(stdout);
-            
-            _thread_info->~GcThreadRegInfo();
-            _free(_thread_info);
-            */
-            
-            
-            initialized = false;
-        }
-    };
-    
-    static thread_local GcThreadRegistrationCanary canary;
-    
     canary.init();
+}
+static inline void gc_remove_current_thread()
+{
+    canary.destruct();
 }
 
 static size_t _gc_scan_word_count = 0;
@@ -731,7 +735,6 @@ void _gc_scan_unsanitary(size_t * stack, size_t * stack_top, GcListNode ** rootl
     _GC_SCAN(stack, stack_top, rootlist)
 }
 
-static inline size_t _gc_context_size;
 static inline size_t _gc_context_get_rsp(Context *);
 static inline size_t _gc_context_get_rip(Context *);
 static inline size_t _gc_context_get_size();
